@@ -109,19 +109,10 @@ jobs:
         with:
           azcliversion: 2.58.0
           inlineScript: |
-            # Fetch ACR password at runtime – no stored secret needed
-            ACR_PASSWORD=$(az acr credential show \
-              --name "${{ env.ACR_NAME }}" \
-              --query "passwords[0].value" \
-              --output tsv)
-
             az functionapp config container set \
               --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
               --name "${{ env.FUNCTION_APP_NAME }}" \
-              --image "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}" \
-              --registry-server "https://${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ env.ACR_NAME }}" \
-              --registry-password "$ACR_PASSWORD"
+              --image "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}"
 
       - name: Verify deployment
         uses: azure/cli@v2
