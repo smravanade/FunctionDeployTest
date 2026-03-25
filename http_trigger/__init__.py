@@ -15,7 +15,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     if name:
         return func.HttpResponse(
-            f"Hello, {name}! This Azure Function is running in a container.",
+            f"Hello, {name}! This Azure Function is running in a container. (blah! 1)",
             status_code=200,
         )
 

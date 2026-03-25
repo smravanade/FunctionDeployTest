@@ -191,6 +191,14 @@ az acr webhook create `
     --actions push `
     --output none
 
+# 9. Add CORS rule for Azure Portal
+Write-Host "── Adding CORS rule for Azure Portal (https://portal.azure.com)..." -ForegroundColor Yellow
+az functionapp cors add `
+    --name $FunctionAppName `
+    --resource-group $ResourceGroup `
+    --allowed-origins https://portal.azure.com `
+    --output none
+
 Write-Host ""
 Write-Host "=== Deployment complete ===" -ForegroundColor Green
 Write-Host "Function App URL : https://${FunctionAppName}.azurewebsites.net"
