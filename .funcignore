@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+.python_packages
+.funcignore
+local.settings.json
+.gitignore
+infra
+.github
