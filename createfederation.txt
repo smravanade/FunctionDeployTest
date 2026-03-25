@@ -1,0 +1,7 @@
+az identity federated-credential create `
+    --identity-name 'github-actions-uami' `
+    --resource-group 'rg-funcapp-container' `
+    --name 'github-main' `
+    --issuer 'https://token.actions.githubusercontent.com' `
+    --subject 'repo:smravanade/FunctionDeployTest:ref:refs/heads/main' `
+    --audiences 'api://AzureADTokenExchange'

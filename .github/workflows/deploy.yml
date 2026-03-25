@@ -1,27 +1,50 @@
 name: Build and Deploy Azure Function App (Container)
 
-# Triggers
 on:
   push:
     branches:
       - main
-  workflow_dispatch:   # allows manual triggering from the Actions tab
+  workflow_dispatch:
 
-# ── Required GitHub Actions secrets ─────────────────────────────────────────
-# AZURE_CREDENTIALS          – JSON output of:
-#                              az ad sp create-for-rbac --name "github-actions-sp" \
-#                                --role contributor \
-#                                --scopes /subscriptions/<sub-id>/resourceGroups/<rg> \
-#                                --sdk-auth
-# ACR_LOGIN_SERVER           – e.g. acrfuncapp12345.azurecr.io
-# ACR_USERNAME               – ACR admin username (same as ACR name)
-# ACR_PASSWORD               – ACR admin password
-# AZURE_FUNCTION_APP_NAME    – name of the Function App resource
-# AZURE_RESOURCE_GROUP       – resource group that contains the Function App
+# ── OIDC – no long-lived secrets ────────────────────────────────────────────
+# Only ONE GitHub secret is required:
+#   AZURE_CLIENT_ID – Client ID of a User-Assigned Managed Identity (UAMI)
+#                     that has a federated credential trusting this repo.
+#
+# One-time setup (run locally in PowerShell):
+#
+#   # 1. Create the User-Assigned Managed Identity
+#   $uami = az identity create `
+#     --name "github-actions-uami" `
+#     --resource-group "rg-funcapp-container" `
+#     --location "eastus" | ConvertFrom-Json
+#
+#   # 2. Grant Contributor on the resource group
+#   az role assignment create `
+#     --role Contributor `
+#     --assignee $uami.principalId `
+#     --scope /subscriptions/e66b7b42-119f-40e9-a944-601f92058b7c/resourceGroups/rg-funcapp-container
+#
+#   # 3. Add federated credential (replace <org>/<repo> with your GitHub repo)
+#   az identity federated-credential create `
+#     --identity-name "github-actions-uami" `
+#     --resource-group "rg-funcapp-container" `
+#     --name "github-main" `
+#     --issuer "https://token.actions.githubusercontent.com" `
+#     --subject "repo:<org>/<repo>:ref:refs/heads/main" `
+#     --audiences "api://AzureADTokenExchange"
+#
+#   # 4. Store $uami.clientId as the AZURE_CLIENT_ID secret in GitHub
 # ────────────────────────────────────────────────────────────────────────────
 
 env:
-  IMAGE_NAME: http-trigger
+  AZURE_TENANT_ID:       cf36141c-ddd7-45a7-b073-111f66d0b30c
+  AZURE_SUBSCRIPTION_ID: e66b7b42-119f-40e9-a944-601f92058b7c
+  AZURE_RESOURCE_GROUP:  rg-funcapp-container
+  ACR_NAME:              acrfuncapp7857
+  ACR_LOGIN_SERVER:      acrfuncapp7857.azurecr.io
+  FUNCTION_APP_NAME:     funcapp-container-7857
+  IMAGE_NAME:            http-trigger
 
 jobs:
   build-and-push:
@@ -29,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write   # required to request the OIDC JWT
 
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
@@ -41,12 +65,15 @@ jobs:
         id: meta
         run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+      - name: Log in to Azure (OIDC – no password)
+        uses: azure/login@v2
         with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR via Azure CLI (no ACR password secret needed)
+        run: az acr login --name ${{ env.ACR_NAME }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -57,8 +84,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -66,34 +93,43 @@ jobs:
     name: Deploy to Azure Function App
     runs-on: ubuntu-latest
     needs: build-and-push
-    permissions: {}
+    permissions:
+      id-token: write   # required to request the OIDC JWT
 
     steps:
-      - name: Log in to Azure
+      - name: Log in to Azure (OIDC – no password)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy container image to Function App
         uses: azure/cli@v2
         with:
           azcliversion: 2.58.0
           inlineScript: |
-            az functionapp config container set \
-              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --name "${{ secrets.AZURE_FUNCTION_APP_NAME }}" \
-              --docker-custom-image-name "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}" \
-              --docker-registry-server-url "https://${{ secrets.ACR_LOGIN_SERVER }}" \
-              --docker-registry-server-user "${{ secrets.ACR_USERNAME }}" \
-              --docker-registry-server-password "${{ secrets.ACR_PASSWORD }}"
+            # Fetch ACR password at runtime – no stored secret needed
+            ACR_PASSWORD=$(az acr credential show \
+              --name "${{ env.ACR_NAME }}" \
+              --query "passwords[0].value" \
+              --output tsv)
 
-      - name: Verify deployment (wait for app to start)
+            az functionapp config container set \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+              --name "${{ env.FUNCTION_APP_NAME }}" \
+              --image "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}" \
+              --registry-server "https://${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ env.ACR_NAME }}" \
+              --registry-password "$ACR_PASSWORD"
+
+      - name: Verify deployment
         uses: azure/cli@v2
         with:
           azcliversion: 2.58.0
           inlineScript: |
             az functionapp show \
-              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --name "${{ secrets.AZURE_FUNCTION_APP_NAME }}" \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+              --name "${{ env.FUNCTION_APP_NAME }}" \
               --query "{name:name, state:state, defaultHostName:defaultHostName}" \
               --output table
